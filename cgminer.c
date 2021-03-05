@@ -2990,7 +2990,8 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 	applog(LOG_DEBUG, "curtime: %d", curtime);
 	applog(LOG_DEBUG, "bits: %s", bits);
 	applog(LOG_DEBUG, "height: %d", height);
-	applog(LOG_DEBUG, "flags: %s", flags);
+	if (flags)
+		applog(LOG_DEBUG, "flags: %s", flags);
 
 	cg_wlock(&pool->gbt_lock);
 	hex2bin(hash_swap, previousblockhash, 32);
