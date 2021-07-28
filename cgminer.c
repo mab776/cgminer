@@ -469,7 +469,7 @@ static char datestamp[40];
 static char blocktime[32];
 struct timeval block_timeval;
 static char best_share[8] = "0";
-static char best_device[8] = "n/a";
+static char best_device[12] = "(n/a)";
 double current_diff = 0xFFFFFFFFFFFFFFFFULL;
 static char block_diff[8];
 uint64_t best_diff = 0;
@@ -3407,11 +3407,11 @@ static void curses_print_status(void)
 			pool->sockaddr_url, pool->diff, pool->rpc_user);
 	} else {
 		cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with%s %s as user %s",
-			pool->sockaddr_url, pool->diff, have_longpoll ? "": "out",
+			pool->rpc_url, pool->diff, have_longpoll ? "": "out",
 			pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
 	}
 	wclrtoeol(statuswin);
-	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s (%s) ",
+	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s %s ",
 		     prev_block, block_diff, blocktime, best_share, best_device);
 	mvwhline(statuswin, 6, 0, '-', linewidth);
 	mvwhline(statuswin, statusy - 1, 0, '-', linewidth);
@@ -5043,7 +5043,7 @@ uint64_t share_diff(const struct work *work)
 
 		thr_id = work->thr_id;
 		cgpu = get_thr_cgpu(thr_id);
-		snprintf(best_device, sizeof(best_device), "%s %u", cgpu->drv->name, cgpu->device_id);
+		snprintf(best_device, sizeof(best_device), "(%s %u)", cgpu->drv->name, cgpu->device_id);
 	}
 	if (unlikely(ret > work->pool->best_diff))
 		work->pool->best_diff = ret;
@@ -5758,7 +5758,8 @@ void zero_bestshare(void)
 	best_diff = 0;
 	memset(best_share, 0, 8);
 	suffix_string(best_diff, best_share, sizeof(best_share), 0);
-	strcpy(best_device,  "n/a");
+	memset(best_device, 0, 12);
+	snprintf(best_device, sizeof(best_device), "(n/a)");
 
 	for (i = 0; i < total_pools; i++) {
 		struct pool *pool = pools[i];
