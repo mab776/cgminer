@@ -7961,6 +7961,8 @@ static void update_work_stats(struct thr_info *thr, struct work *work)
 		found_blocks++;
 		work->mandatory = true;
 		applog(LOG_NOTICE, "Found block for pool %d!", work->pool->pool_no);
+		// reset best_share stats when block was found
+		zero_bestshare();
 	}
 
 	mutex_lock(&stats_lock);
