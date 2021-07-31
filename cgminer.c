@@ -464,15 +464,18 @@ bool curses_active;
 char current_hash[68];
 static char prev_block[12];
 static char current_block[32];
+static char last_found_block[12] = "\0";
 
 static char datestamp[40];
 static char blocktime[32];
 struct timeval block_timeval;
 static char best_share[8] = "0";
-static char best_device[12] = "(n/a)";
+static char best_share_ever[8] = "0";
+static char best_device[12] = "n/a";
 double current_diff = 0xFFFFFFFFFFFFFFFFULL;
 static char block_diff[8];
 uint64_t best_diff = 0;
+uint64_t best_diff_ever = 0;
 
 struct block {
 	char hash[68];
@@ -3411,9 +3414,13 @@ static void curses_print_status(void)
 			pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
 	}
 	wclrtoeol(statuswin);
-	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s %s ",
-		     prev_block, block_diff, blocktime, best_share, best_device);
-	mvwhline(statuswin, 6, 0, '-', linewidth);
+	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Height: %u  Diff: %s  Started: %s",
+		     prev_block, pool->current_height, block_diff, blocktime);
+	wclrtoeol(statuswin);
+	cg_mvwprintw(statuswin, 6, 0, " Last block found: %s...  Best share (ever): %s [%s] (%s)",
+		     last_found_block, best_share, best_device, best_share_ever);
+	wclrtoeol(statuswin);
+	mvwhline(statuswin, 7, 0, '-', linewidth);
 	mvwhline(statuswin, statusy - 1, 0, '-', linewidth);
 #ifdef USE_USBUTILS
 	cg_mvwprintw(statuswin, devcursor - 1, 1, "[U]SB management [P]ool management [S]ettings [D]isplay options [Q]uit");
@@ -5040,10 +5047,14 @@ uint64_t share_diff(const struct work *work)
 		new_best = true;
 		best_diff = ret;
 		suffix_string(best_diff, best_share, sizeof(best_share), 0);
+		if (unlikely(best_diff > best_diff_ever)) {
+			best_diff_ever = best_diff;
+			suffix_string(best_diff, best_share_ever, sizeof(best_share), 0);
+		}
 
 		thr_id = work->thr_id;
 		cgpu = get_thr_cgpu(thr_id);
-		snprintf(best_device, sizeof(best_device), "(%s %u)", cgpu->drv->name, cgpu->device_id);
+		snprintf(best_device, sizeof(best_device), "%s %u", cgpu->drv->name, cgpu->device_id);
 	}
 	if (unlikely(ret > work->pool->best_diff))
 		work->pool->best_diff = ret;
@@ -5759,7 +5770,7 @@ void zero_bestshare(void)
 	memset(best_share, 0, 8);
 	suffix_string(best_diff, best_share, sizeof(best_share), 0);
 	memset(best_device, 0, 12);
-	snprintf(best_device, sizeof(best_device), "(n/a)");
+	snprintf(best_device, sizeof(best_device), "n/a");
 
 	for (i = 0; i < total_pools; i++) {
 		struct pool *pool = pools[i];
@@ -7952,6 +7963,7 @@ bool test_nonce_diff(struct work *work, uint32_t nonce, double diff)
 static void update_work_stats(struct thr_info *thr, struct work *work)
 {
 	double test_diff = current_diff;
+	char *work_hash;
 
 	work->share_diff = share_diff(work);
 
@@ -7961,6 +7973,10 @@ static void update_work_stats(struct thr_info *thr, struct work *work)
 		found_blocks++;
 		work->mandatory = true;
 		applog(LOG_NOTICE, "Found block for pool %d!", work->pool->pool_no);
+		// update last found block
+		work_hash = bin2hex(work->hash, sizeof(work->hash));
+		strncpy(last_found_block, work_hash, 8);
+		last_found_block[8] = '\0';
 		// reset best_share stats when block was found
 		zero_bestshare();
 	}
@@ -10143,7 +10159,7 @@ int main(int argc, char *argv[])
 	free(s);
 	strcat(cgminer_path, "/");
 
-	devcursor = 8;
+	devcursor = 9;
 	logstart = devcursor + 1;
 	logcursor = logstart + 1;
 
