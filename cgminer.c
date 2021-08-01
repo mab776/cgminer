@@ -7144,6 +7144,11 @@ static bool setup_gbt_solo(CURL *curl, struct pool *pool)
 		}
 		goto out;
 	}
+	// check for P2PKH address format
+	if (strncmp(opt_btc_address, "1", 1) != 0) {
+		applog(LOG_ERR, "Invalid Bitcoin address %s, only P2PKH address format (1...) is supported for solo mining", opt_btc_address);
+		goto out;
+	}
 	snprintf(s, 256, "{\"id\": 1, \"method\": \"validateaddress\", \"params\": [\"%s\"]}\n", opt_btc_address);
 	val = json_rpc_call(curl, pool->rpc_url, pool->rpc_userpass, s, true,
 			    false, &rolltime, pool, false);
