@@ -3865,6 +3865,9 @@ static void show_hash(struct work *work, char *hashshow)
 	suffix_string(work->share_diff, diffdisp, sizeof (diffdisp), 0);
 	snprintf(hashshow, 64, "%08lx Diff %s/%"PRIu64"%s", h32, diffdisp, uintdiff,
 		 work->block? " BLOCK!" : "");
+	// update last found block
+	if (work->block)
+		snprintf(last_found_block, 12, "%08lx", h32);
 }
 
 #ifdef HAVE_LIBCURL
@@ -7978,10 +7981,6 @@ static void update_work_stats(struct thr_info *thr, struct work *work)
 		found_blocks++;
 		work->mandatory = true;
 		applog(LOG_NOTICE, "Found block for pool %d!", work->pool->pool_no);
-		// update last found block
-		work_hash = bin2hex(work->hash, sizeof(work->hash));
-		strncpy(last_found_block, work_hash, 8);
-		last_found_block[8] = '\0';
 		// reset best_share stats when block was found
 		zero_bestshare();
 	}
