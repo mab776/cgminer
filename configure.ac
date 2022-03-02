@@ -85,6 +85,9 @@ esac
 #CFLAGS="$CFLAGS -Wimplicit-fallthrough=0"
 #^ causes problem on gcc 4.9 - pass in from CFLAG if needed
 
+# Explicitly set -fcommon for gcc 10+
+CFLAGS="$CFLAGS -fcommon"
+
 case $target in
   *-*-linux-gnu*)
     have_linux=true
