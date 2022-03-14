@@ -44,6 +44,7 @@
 #include "elist.h"
 #include "compat.h"
 #include "util.h"
+#include "segwit_addr.h"
 
 #define DEFAULT_SOCKWAIT 60
 #ifndef STRATUM_USER_AGENT
@@ -1017,18 +1018,52 @@ void b58tobin(unsigned char *b58bin, const char *b58)
 	}
 }
 
-void address_to_pubkeyhash(unsigned char *pkh, const char *addr)
+int addr_format_is_bech32(const char *addr)
 {
-	unsigned char b58bin[25];
+	return (!strncasecmp(addr, "bc1", 3) || !strncasecmp(addr, "tb1", 3));
+}
 
-	memset(b58bin, 0, 25);
-	b58tobin(b58bin, addr);
-	pkh[0] = 0x76;
-	pkh[1] = 0xa9;
-	pkh[2] = 0x14;
-	cg_memcpy(&pkh[3], &b58bin[1], 20);
-	pkh[23] = 0x88;
-	pkh[24] = 0xac;
+void address_to_pubkeyhash(unsigned char *pkh, int *pkh_len, const char *addr)
+{
+
+	if (addr_format_is_bech32(addr)) {
+		uint8_t witprog[40];
+		size_t witprog_len;
+		int witver;
+		const char* hrp = "bc";
+		int ok = 1;
+		int ret = segwit_addr_decode(&witver, witprog, &witprog_len, hrp, addr);
+		if (!ret) {
+			hrp = "tb";
+			ret = segwit_addr_decode(&witver, witprog, &witprog_len, hrp, addr);
+		}
+		if (!ret) {
+			applog(LOG_ERR, "segwit_addr_decode fails: '%s'\n", addr);
+			ok = 0;
+		}
+		if (ok) {
+			pkh[0] = witver ? (0x50 + witver) : 0;
+			pkh[1] = witprog_len;
+			cg_memcpy(&pkh[2], witprog, witprog_len);
+			*pkh_len = witprog_len + 2;
+			applog(LOG_DEBUG, "witprog=%s, witprog_len=%lu, pkh=%s, pkh_len=%d",
+				bin2hex(witprog, witprog_len), witprog_len, bin2hex(pkh, witprog_len + 2), *pkh_len);
+		}
+	}
+	else {
+		unsigned char b58bin[25];
+
+		memset(b58bin, 0, 25);
+		b58tobin(b58bin, addr);
+		pkh[0] = 0x76;
+		pkh[1] = 0xa9;
+		pkh[2] = 0x14;
+		cg_memcpy(&pkh[3], &b58bin[1], 20);
+		pkh[23] = 0x88;
+		pkh[24] = 0xac;
+		*pkh_len = 25;
+		applog(LOG_DEBUG, "pkh=%s", bin2hex(pkh, 25));
+	}
 }
 
 /*  For encoding nHeight into coinbase, return how many bytes were used */
@@ -1037,11 +1072,15 @@ int ser_number(unsigned char *s, int32_t val)
 	int32_t *i32 = (int32_t *)&s[1];
 	int len;
 
+	if (val < 17) {
+		s[0] = 0x50 + val;
+		return 1;
+	}
 	if (val < 128)
 		len = 1;
-	else if (val < 16512)
+	else if (val < 32768)
 		len = 2;
-	else if (val < 2113664)
+	else if (val < 8388608)
 		len = 3;
 	else
 		len = 4;

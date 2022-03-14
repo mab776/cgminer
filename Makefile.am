@@ -53,6 +53,9 @@ cgminer_SOURCES	+= klist.h klist.c
 
 cgminer_SOURCES	+= noncedup.c
 
+# Bech32 support
+cgminer_SOURCES	+= segwit_addr.c segwit_addr.h
+
 if NEED_FPGAUTILS
 cgminer_SOURCES += fpgautils.c fpgautils.h
 endif

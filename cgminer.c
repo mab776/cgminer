@@ -3087,7 +3087,7 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 		+ 4 // txin sequence no
 		+ 1 // txouts
 		+ 8 // value
-		+ 1 + 25 // txout
+		+ 1 + pool->script_pubkey_len // txout
 		+ 4; // lock
 
 	if (insert_witness) {
@@ -3104,7 +3104,7 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 	*u64 = htole64(coinbasevalue);
 
 	if (insert_witness) {
-		unsigned char *witness = &pool->coinbase[41 + ofs + 4 + 1 + 8 + 1 + 25];
+		unsigned char *witness = &pool->coinbase[41 + ofs + 4 + 1 + 8 + 1 + pool->script_pubkey_len];
 
 		memset(witness, 0, 8);
 		witness_txout_len += 8;
@@ -3117,7 +3117,7 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 
 	pool->nonce2 = 0;
 	pool->n2size = 4;
-	pool->coinbase_len = 41 + ofs + 4 + 1 + 8 + 1 + 25 + witness_txout_len + 4;
+	pool->coinbase_len = 41 + ofs + 4 + 1 + 8 + 1 + pool->script_pubkey_len + witness_txout_len + 4;
 	cg_wunlock(&pool->gbt_lock);
 
 	snprintf(header, 257, "%s%s%s%s%s%s%s",
@@ -7128,8 +7128,9 @@ static void __setup_gbt_solo(struct pool *pool)
 {
 	cg_wlock(&pool->gbt_lock);
 	cg_memcpy(pool->coinbase, scriptsig_header_bin, 41);
-	pool->coinbase[41 + pool->n1_len + 4 + 1 + 8] = 25;
-	cg_memcpy(pool->coinbase + 41 + pool->n1_len + 4 + 1 + 8 + 1, pool->script_pubkey, 25);
+	applog(LOG_DEBUG, "script_pubkey_len=%d", pool->script_pubkey_len);
+	pool->coinbase[41 + pool->n1_len + 4 + 1 + 8] = pool->script_pubkey_len;
+	cg_memcpy(pool->coinbase + 41 + pool->n1_len + 4 + 1 + 8 + 1, pool->script_pubkey, pool->script_pubkey_len);
 	cg_wunlock(&pool->gbt_lock);
 }
 
@@ -7147,9 +7148,9 @@ static bool setup_gbt_solo(CURL *curl, struct pool *pool)
 		}
 		goto out;
 	}
-	// check for P2PKH address format
-	if (strncmp(opt_btc_address, "1", 1) != 0) {
-		applog(LOG_ERR, "Invalid Bitcoin address %s, only P2PKH address format (1...) is supported for solo mining", opt_btc_address);
+	// check for P2PKH or BECH32 address format
+	if ((strncmp(opt_btc_address, "1", 1) != 0) && (!addr_format_is_bech32(opt_btc_address))) {
+		applog(LOG_ERR, "Invalid Bitcoin address %s, only P2PKH (1...) or BECH32 (bc1...) format is supported for solo mining", opt_btc_address);
 		goto out;
 	}
 	snprintf(s, 256, "{\"id\": 1, \"method\": \"validateaddress\", \"params\": [\"%s\"]}\n", opt_btc_address);
@@ -7169,7 +7170,8 @@ static bool setup_gbt_solo(CURL *curl, struct pool *pool)
 	}
 	applog(LOG_NOTICE, "Solo mining to valid address: %s", opt_btc_address);
 	ret = true;
-	address_to_pubkeyhash(pool->script_pubkey, opt_btc_address);
+	address_to_pubkeyhash(pool->script_pubkey, &pool->script_pubkey_len, opt_btc_address);
+	applog(LOG_DEBUG, "script_pubkey: %s", bin2hex(pool->script_pubkey, pool->script_pubkey_len));
 	hex2bin(scriptsig_header_bin, scriptsig_header, 41);
 	__setup_gbt_solo(pool);
 

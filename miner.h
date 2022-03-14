@@ -1381,7 +1381,8 @@ struct pool {
 	int transactions;
 	char *txn_data;
 	unsigned char scriptsig_base[100];
-	unsigned char script_pubkey[25 + 3];
+	unsigned char script_pubkey[42 + 3];
+	int script_pubkey_len;
 	int nValue;
 	CURL *gbt_curl;
 	bool gbt_curl_inuse;
