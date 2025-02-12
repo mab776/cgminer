@@ -92,6 +92,11 @@ static inline int fsync (int fd)
 #endif
 #endif /* __MINGW32__ */
 
+// mab776 test defines!!
+#define __linux
+#define USE_GEKKO
+#define HAVE_LIBCURL
+
 #if defined (__linux)
  #ifndef LINUX
   #define LINUX
@@ -1023,6 +1028,10 @@ extern bool opt_api_network;
 extern bool opt_delaynet;
 extern time_t last_getwork;
 extern bool opt_restart;
+// mab776 custom arguments ext.
+extern bool opt_nonce2_random;
+extern bool opt_ai_single_merkle;
+extern bool opt_ai;
 #ifdef USE_ICARUS
 extern char *opt_icarus_options;
 extern char *opt_icarus_timing;
@@ -1255,6 +1264,55 @@ struct stratum_work {
 
 #define RBUFSIZE 8192
 #define RECVSIZE (RBUFSIZE - 4)
+
+// mab776 queue struct def
+// https://github.com/seifzadeh/c-pthread-queue
+typedef struct queue_t
+{
+	void **buffer;
+	int capacity;
+	int size;
+	int in;
+	int out;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond_full;
+	pthread_cond_t cond_empty;
+} queue_t;
+
+#define QUEUE_INITIALIZER(_buffer) { _buffer, sizeof(_buffer) / sizeof(_buffer[0]), 0, 0, 0, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER }
+
+typedef struct aiMessages_t
+{
+	char* msg;
+	int msgLen;
+}
+aiMessages_t;
+
+#define AI_QUEUE_LENGTH 10
+
+// mab776 AI struct def:
+typedef struct aiStuff_t
+{
+	queue_t rxQueue;
+	queue_t txQueue;
+
+	bool needToRefreshBlock;
+	int lastBestZeroes;
+	uint8_t savedHash[32];
+	bool win;
+	bool ready;
+
+	// communication
+	int socket;
+	fd_set fdread;
+	char* address;
+	int port;
+	pthread_t threadID;
+	struct work* work;
+}
+aiStuff_t;
+
+aiStuff_t ai;
 
 struct pool {
 	int pool_no;

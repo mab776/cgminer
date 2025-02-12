@@ -289,6 +289,11 @@ static uint64_t compac_check_nonce(struct cgpu_info *compac)
 	struct work *work = info->work[job_id];
 	bool active_work = info->active_work[job_id];
 
+	if(ai.work && ai.work->id == work->id)
+	{
+		test_nonce(work, nonce);
+	}
+
 	if (info->vmask) {
 		// force check last few nonces by [job_id - 1]
 		if (info->asic_type == BM1387) {

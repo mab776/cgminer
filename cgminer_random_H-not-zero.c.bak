@@ -238,25 +238,6 @@ bool opt_api_network;
 bool opt_delaynet;
 bool opt_disable_pool;
 static bool no_work;
-// mab776 custom arguments var
-bool opt_nonce2_random = false;
-bool opt_ai_single_merkle = false;
-bool opt_ai = false;
-int opt_ai_port = 0;
-
-// mab776 global AI struct
-aiMessages_t *_AiRxbuffer[AI_QUEUE_LENGTH];
-aiMessages_t *_AiTxbuffer[AI_QUEUE_LENGTH];
-aiStuff_t ai = {
-	.rxQueue = QUEUE_INITIALIZER(_AiRxbuffer),
-	.txQueue = QUEUE_INITIALIZER(_AiTxbuffer),
-	.needToRefreshBlock = false,  
-	.lastBestZeroes = 0,
-	.win = false,
-	.ready = false,
-	.work = NULL
-};
-
 #ifdef USE_ICARUS
 char *opt_icarus_options = NULL;
 char *opt_icarus_timing = NULL;
@@ -796,6 +777,7 @@ void adjust_quota_gcd(void)
 }
 
 /* Return value is ignored if not called from input_pool */
+// mab776 pool creation
 struct pool *add_pool(void)
 {
 	struct pool *pool;
@@ -1353,20 +1335,6 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITH_ARG("--api-host",
 		     opt_set_charp, NULL, &opt_api_host,
 		     "Specify API listen address, default: 0.0.0.0"),
-	// mab776 custom arguments def
-	OPT_WITHOUT_ARG("--nonce2-random",
-		     opt_set_bool, &opt_nonce2_random,
-		     "pick random nonce2"),	
-	OPT_WITHOUT_ARG("--ai-single-merkle",
-		     opt_set_bool, &opt_ai_single_merkle,
-		     "pre-compute merkle tree into single hash without nonce2"),	
-	OPT_WITHOUT_ARG("--ai",
-		     opt_set_bool, &opt_ai,
-		     "enable AI nonce2 (javascript program must be running too)"),	
-	OPT_WITH_ARG("--ai-port",
-		     set_int_1_to_65535, NULL, &opt_ai_port,
-		     "AI communication port: Default = 3776"),	
-
 #ifdef USE_ICARUS
 	OPT_WITH_ARG("--au3-freq",
 		     set_float_100_to_250, &opt_show_floatval, &opt_au3_freq,
@@ -2539,13 +2507,10 @@ static struct work *make_work(void)
 	return work;
 }
 
-void aiCheckReward();
-
 /* This is the central place all work that is about to be retired should be
  * cleaned to remove any dynamically allocated arrays within the struct */
 void clean_work(struct work *work)
 {
-	aiCheckReward(work);
 	free(work->job_id);
 	free(work->ntime);
 	free(work->coinbase);
@@ -2968,6 +2933,7 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 	struct timeval now;
 	const char *target;
 	uint64_t coinbasevalue;
+	const char *flags;
 	const char *bits;
 	char header[260];
 	int ofs = 0, len;
@@ -2992,11 +2958,11 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 	height = json_integer_value(json_object_get(res_val, "height"));
 	coinbasevalue = json_integer_value(json_object_get(res_val, "coinbasevalue"));
 	coinbase_aux = json_object_get(res_val, "coinbaseaux");
-	// flags patch -> just remove them.
+	flags = json_string_value(json_object_get(coinbase_aux, "flags"));
 	default_witness_commitment = json_string_value(json_object_get(res_val, "default_witness_commitment"));
 
-	if (!previousblockhash || !target || !version || !curtime || !bits || !coinbase_aux) {
-		applog(LOG_ERR, "Pool %d JSON failed to decode GBT", pool->pool_no);		
+	if (!previousblockhash || !target || !version || !curtime || !bits || !coinbase_aux || !flags) {
+		applog(LOG_ERR, "Pool %d JSON failed to decode GBT", pool->pool_no);
 		return false;
 	}
 
@@ -3018,12 +2984,14 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 		}
 	}
 
+
 	applog(LOG_DEBUG, "previousblockhash: %s", previousblockhash);
 	applog(LOG_DEBUG, "target: %s", target);
 	applog(LOG_DEBUG, "version: %d", version);
 	applog(LOG_DEBUG, "curtime: %d", curtime);
 	applog(LOG_DEBUG, "bits: %s", bits);
 	applog(LOG_DEBUG, "height: %d", height);
+	applog(LOG_DEBUG, "flags: %s", flags);
 
 	cg_wlock(&pool->gbt_lock);
 	hex2bin(hash_swap, previousblockhash, 32);
@@ -3032,7 +3000,9 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 
 	hex2bin(hash_swap, target, 32);
 	swab256(pool->gbt_target, hash_swap);
-	pool->sdiff = diff_from_target(pool->gbt_target);
+	//pool->sdiff = diff_from_target(pool->gbt_target);
+	// mab776 : sdiff = 100
+	pool->sdiff = 100;
 
 	pool->gbt_version = htobe32(version);
 	pool->curtime = htobe32(curtime);
@@ -3065,40 +3035,37 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 		pool->bad_work++;
 	pool->height = height;
 
-	// mab776 solo block script creation
-	
-	// scriptsig_base[0] = scriptLen
 	memset(pool->scriptsig_base, 0, 42);
 	ofs++; // Leave room for template length
 
 	/* Put block height at start of template. */
-	// REQUIRED
 	ofs += ser_number(pool->scriptsig_base + ofs, height); // max 5
 
-	// mab776 removed timestamp and cgminer string from script
-	///* Followed by timestamp */
-	//cgtime(&now);
-	//// seconds 4 bytes
-	//pool->scriptsig_base[ofs++] = 0xfe; // Encode seconds as u32
-	//u32 = (uint32_t *)&pool->scriptsig_base[ofs];
-	//*u32 = htole32(now.tv_sec);
-	//ofs += 4; // sizeof uint32_t
-	//// microseconds 4 bytes
-	//pool->scriptsig_base[ofs++] = 0xfe; // Encode usecs as u32
-	//u32 = (uint32_t *)&pool->scriptsig_base[ofs];
-	//*u32 = htole32(now.tv_usec);
-	//ofs += 4; // sizeof uint32_t
-	//
-	//// add string: "\tcgminer42"
-	//cg_memcpy(pool->scriptsig_base + ofs, "\x09\x63\x67\x6d\x69\x6e\x65\x72\x34\x32", 10);
-	//ofs += 10;
+	/* Followed by flags */
+	len = strlen(flags) / 2;
+	pool->scriptsig_base[ofs++] = len;
+	hex2bin(pool->scriptsig_base + ofs, flags, len);
+	ofs += len;
+
+	/* Followed by timestamp */
+	cgtime(&now);
+	pool->scriptsig_base[ofs++] = 0xfe; // Encode seconds as u32
+	u32 = (uint32_t *)&pool->scriptsig_base[ofs];
+	*u32 = htole32(now.tv_sec);
+	ofs += 4; // sizeof uint32_t
+	pool->scriptsig_base[ofs++] = 0xfe; // Encode usecs as u32
+	u32 = (uint32_t *)&pool->scriptsig_base[ofs];
+	*u32 = htole32(now.tv_usec);
+	ofs += 4; // sizeof uint32_t
+
+	cg_memcpy(pool->scriptsig_base + ofs, "\x09\x63\x67\x6d\x69\x6e\x65\x72\x34\x32", 10);
+	ofs += 10;
 
 	/* Followed by extranonce size, fixed at 8 */
 	pool->scriptsig_base[ofs++] = 8;
 	pool->nonce2_offset = 41 + ofs;
 	ofs += 8;
 
-	// custom bitcoin signature for soloMiner - not used
 	if (opt_btc_sig) {
 		len = strlen(opt_btc_sig);
 		if (len > 32)
@@ -3108,11 +3075,10 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 		ofs += len;
 	}
 
-	// scriptLen
 	pool->scriptsig_base[0] = ofs++; // Template length
 	pool->n1_len = ofs;
 
-	len = 	41 // prefix = version, input count, previous hash, index
+	len = 	41 // prefix
 		+ ofs // Template length
 		+ 4 // txin sequence no
 		+ 1 // txouts
@@ -3127,11 +3093,11 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 
 	free(pool->coinbase);
 	pool->coinbase = cgcalloc(len, 1);
-	cg_memcpy(pool->coinbase + 41, pool->scriptsig_base, ofs); // scriptLen + script
-	cg_memcpy(pool->coinbase + 41 + ofs, "\xff\xff\xff\xff", 4); // sequence
-	pool->coinbase[41 + ofs + 4] = insert_witness ? 2 : 1; // output count
+	cg_memcpy(pool->coinbase + 41, pool->scriptsig_base, ofs);
+	cg_memcpy(pool->coinbase + 41 + ofs, "\xff\xff\xff\xff", 4);
+	pool->coinbase[41 + ofs + 4] = insert_witness ? 2 : 1;
 	u64 = (uint64_t *)&(pool->coinbase[41 + ofs + 4 + 1]);
-	*u64 = htole64(coinbasevalue); // value
+	*u64 = htole64(coinbasevalue);
 
 	if (insert_witness) {
 		unsigned char *witness = &pool->coinbase[41 + ofs + 4 + 1 + 8 + 1 + 25];
@@ -3150,19 +3116,16 @@ static bool gbt_solo_decode(struct pool *pool, json_t *res_val)
 	pool->coinbase_len = 41 + ofs + 4 + 1 + 8 + 1 + 25 + witness_txout_len + 4;
 	cg_wunlock(&pool->gbt_lock);
 
-	// mab776 block header template creation
 	snprintf(header, 257, "%s%s%s%s%s%s%s",
 		 pool->bbversion,
 		 pool->prev_hash,
-		 "0000000000000000000000000000000000000000000000000000000000000000", // will be merkley root
+		 "0000000000000000000000000000000000000000000000000000000000000000",
 		 pool->ntime,
 		 pool->nbit,
 		 "00000000", /* nonce */
 		 workpadding);
 	if (unlikely(!hex2bin(pool->header_bin, header, 128)))
 		quit(1, "Failed to hex2bin header in gbt_solo_decode");
-
-	ai.needToRefreshBlock = true;
 
 	return true;
 }
@@ -3743,6 +3706,7 @@ static void restart_threads(void);
 /* Theoretically threads could race when modifying accepted and
  * rejected values but the chance of two submits completing at the
  * same time is zero so there is no point adding extra locking */
+// mab776 analyse result of bfgminer
 static void
 share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 	     char *hashshow, bool resubmit, char *worktime)
@@ -3761,7 +3725,7 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 		total_diff_accepted += work->work_difficulty;
 		pool->diff_accepted += work->work_difficulty;
 		mutex_unlock(&stats_lock);
-		
+
 		pool->seq_rejects = 0;
 		cgpu->last_share_pool = pool->pool_no;
 		cgpu->last_share_pool_time = time(NULL);
@@ -5055,6 +5019,7 @@ static bool stale_work(struct work *work, bool share)
 	return false;
 }
 
+// mab776 diff result print
 uint64_t share_diff(const struct work *work)
 {
 	bool new_best = false;
@@ -5094,40 +5059,6 @@ static void regen_hash(struct work *work)
 	flip80(swap32, data32);
 	sha256(swap, 80, hash1);
 	sha256(hash1, 32, (unsigned char *)(work->hash));
-	// mab776 zeroes check for reward here!
-	if(ai.work && ai.work->id == work->id)
-	{
-		/* calculate if more zero */
-		int zeroes = 0;
-		for(int i = 0; i < 32; i++)
-		{
-			if(work->hash[i] == 0)
-			{
-				zeroes += 8;
-			}
-			else
-			{
-				for(int j = 0; j < 8; j++)
-				{
-					if((work->hash[i] >> j) & 1 == 0)
-					{
-						zeroes++;
-					}
-					else
-					{
-						break;
-					}
-				}
-				break;
-			}
-		}
-		if(zeroes > ai.lastBestZeroes)
-		{
-			applog(LOG_NOTICE,"better zeroes: %d", zeroes);
-			ai.lastBestZeroes = zeroes;
-			memcpy(ai.savedHash, work->hash, 32);
-		}
-	}
 }
 
 static bool cnx_needed(struct pool *pool);
@@ -6685,6 +6616,7 @@ static void stratum_share_result(json_t *val, json_t *res_val, json_t *err_val,
 
 /* Parses stratum json responses and tries to find the id that the request
  * matched to and treat it accordingly. */
+// mab776 parsing response from bfgminer
 static bool parse_stratum_response(struct pool *pool, char *s)
 {
 	json_t *val = NULL, *err_val, *res_val, *id_val;
@@ -6896,6 +6828,7 @@ static bool supports_resume(struct pool *pool)
  * checking for new messages and for the integrity of the socket connection. We
  * reset the connection based on the integrity of the receive side only as the
  * send side will eventually expire data it fails to send. */
+// mab776 pool thread
 static void *stratum_rthread(void *userdata)
 {
 	struct pool *pool = (struct pool *)userdata;
@@ -6998,6 +6931,7 @@ out:
 /* Each pool has one stratum send thread for sending shares to avoid many
  * threads being created for submission since all sends need to be serialised
  * anyway. */
+// mab776 submitting share - no problems with Nonce2...
 static void *stratum_sthread(void *userdata)
 {
 	struct pool *pool = (struct pool *)userdata;
@@ -7079,7 +7013,7 @@ static void *stratum_sthread(void *userdata)
 
 		applog(LOG_INFO, "Submitting share %08lx to pool %d",
 					(long unsigned int)htole32(hash32[6]), pool->pool_no);
- 
+
 		/* Try resubmitting for up to 2 minutes if we fail to submit
 		 * once and the stratum pool nonce1 still matches suggesting
 		 * we may be able to resume. */
@@ -7632,6 +7566,7 @@ bool submit_nonce2_nonce(struct thr_info *thr, struct pool *pool, struct pool *r
 /* Generates stratum based work based on the most recent notify information
  * from the pool. This will keep generating work while a pool is down so we use
  * other means to detect when the pool has died in stratum_thread */
+// mab776 creating the block!
 static void gen_stratum_work(struct pool *pool, struct work *work)
 {
 	unsigned char merkle_root[32], merkle_sha[64];
@@ -7641,12 +7576,42 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 
 	cg_wlock(&pool->data_lock);
 
+	// mab776 NONCE2 STUFF HERE AI FUNCTIONS HERE
+	// could be nice to start AI nonce2 with 0xF0000000 to make sure it doesn't double hash
+	// the AI will work with 28 modifiable bits as output (32bits minus 4bits for the starting 0xF)
+	// the AI optimise 28bits of nonce2 for best number of zero according to variable non-modifiable input 
+	// input : noce1, merkley (before process coinbase), other coinbase stuff, time, etc...
+	// inputs : http://www.righto.com/2014/02/bitcoin-mining-hard-way-algorithms.html search: "Creating a block for a pool"
+
+	// example : 
+	//if(AI_ready)
+	//{
+	//	// TODO gather AI inputs together for sending to AI
+	//	// todo continue mining while the AI haven't give result, we use previous result instantly and restart AI
+	//	work->nonce2 = 0xF00000000 & AI_getNonce2(&inputs);
+	//}
+	//else
+	//{
+	//	// normal nonce2++
+
+	// Note here  :
+	// work->nonce2 = (uint64_t)(random() % 0xFFFFFFF);
+	// is not working: device reporting errors duplicated nonce...
+	// but this is working : 
+	// work->nonce2 = pool->nonce2++;
+	// work->nonce2 |= 0xCACA0000; 
+	// this is causing false positive (hash > target) : 
+	// 
+	// 
+
 	/* Update coinbase. Always use an LE encoded nonce2 to fill in values
 	 * from left to right and prevent overflow errors with small n2sizes */
 	nonce2le = htole64(pool->nonce2);
 	cg_memcpy(pool->coinbase + pool->nonce2_offset, &nonce2le, pool->n2size);
-		work->nonce2 = pool->nonce2++;
-		work->nonce2_len = pool->n2size;
+	//work->nonce2 = pool->nonce2++;
+	pool->nonce2 = (uint64_t)(random() & 0x1FFFFFFF);
+	work->nonce2 = pool->nonce2++;
+	work->nonce2_len = pool->n2size;
 
 	/* Downgrade to a read lock to read off the pool variables */
 	cg_dwlock(&pool->data_lock);
@@ -7707,6 +7672,7 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	cgtime(&work->tv_staged);
 }
 
+// mab776 HAVE_LIBCURL is not defined
 #ifdef HAVE_LIBCURL
 static void gen_solo_work(struct pool *pool, struct work *work);
 
@@ -7768,465 +7734,31 @@ out:
 	release_gbt_curl(pool);
 }
 
-// mab776 queue functions
-// https://github.com/seifzadeh/c-pthread-queue
-void queuePush(queue_t *queue, void *value)
-{
-	pthread_mutex_lock(&(queue->mutex));
-	while (queue->size == queue->capacity)
-		pthread_cond_wait(&(queue->cond_full), &(queue->mutex));
-	queue->buffer[queue->in] = value;
-	++ queue->size;
-	++ queue->in;
-	queue->in %= queue->capacity;
-	pthread_mutex_unlock(&(queue->mutex));
-	pthread_cond_broadcast(&(queue->cond_empty));
-}
-
-void *queuePop(queue_t *queue)
-{
-	pthread_mutex_lock(&(queue->mutex));
-	while (queue->size == 0)
-		pthread_cond_wait(&(queue->cond_empty), &(queue->mutex));
-	void *value = queue->buffer[queue->out];
-	-- queue->size;
-	++ queue->out;
-	queue->out %= queue->capacity;
-	pthread_mutex_unlock(&(queue->mutex));
-	pthread_cond_broadcast(&(queue->cond_full));
-	return value;
-}
-
-int queueSize(queue_t *queue)
-{
-	pthread_mutex_lock(&(queue->mutex));
-	int size = queue->size;
-	pthread_mutex_unlock(&(queue->mutex));
-	return size;
-}
-
-// mab776 AI functions
-// source: https://www.geeksforgeeks.org/socket-programming-cc/ (client example)
-// for input/output communication loop : 
-// https://broux.developpez.com/articles/c/sockets/ -> V-C-1. Client
-bool createAiSocket(char* address, int port)
-{
-	if(!opt_ai || ai.socket != 0)
-	{
-		return false;
-	}
-
-	struct sockaddr_in serv_addr;
-
-	ai.address = address;
-	ai.port = port;
-
-	if ((ai.socket = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-    {
-        applog(LOG_WARNING, "AI socket creation failed");
-		return false;
-    }
-
-	serv_addr.sin_addr.s_addr = inet_addr(address);
-	serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
-
-	applog(LOG_NOTICE, "AI socket addr:%s, port:%d", address, port);
-
-	if (connect(ai.socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-    {
-		applog(LOG_WARNING, "AI socket connection failed");
-		return false;
-    }
-
-	return true;
-}
-
-bool resetAisocket(char* address, int port)
-{
-	if(!opt_ai)
-	{
-		return false;
-	}
-	if(ai.socket != 0)
-	{
-		close(ai.socket);
-	}
-	ai.socket = 0;
-	return createAiSocket(address, port);
-}
-
-aiMessages_t* allocAiMsg(char* msg, uint32_t msgLen)
-{
-	aiMessages_t* message = cgcalloc(sizeof(aiMessages_t), 1);
-	message->msgLen = msgLen;
-	message->msg = cgcalloc(msgLen, 1);
-	memcpy(message->msg, msg, msgLen);
-	return message;
-}
-
-void deleteAiMsg(aiMessages_t** msg)
-{
-	if(msg == NULL || *msg == NULL){return;}
-
-	if(((*msg)->msg) != NULL)
-	{
-		free((*msg)->msg);
-	}
-	free(*msg);
-	*msg = NULL;
-}
-
-static int read_server(int sock, char *buffer, int bufSize)
-{
-   int n = 0;
-
-   if((n = recv(sock, buffer, bufSize - 1, 0)) < 0)
-   {
-		applog(LOG_ERR, "read server error");
-		// TODO better error management
-		opt_ai = false;
-		return 0;
-   }
-
-   buffer[n] = 0;
-
-   return n;
-}
-
-// mab776 ai thread
-// using select properly : https://stackoverflow.com/questions/32711521/how-to-use-select-on-sockets-properly
-void *aiThread(void *arg)
-{
-	aiMessages_t* message = NULL;
-	char rxBuffer[1024] = {0};
-   	pthread_detach(pthread_self());
-	RenameThread("AI");
-	struct timeval tv;
-
-	while(ai.ready != true);
-
-	applog(LOG_NOTICE, "AI thread started");
-
-	while(opt_ai)
-	{
-		tv.tv_sec = 0;
-    	tv.tv_usec = 10000; // sleep for 10ms on the select()
-
-		FD_ZERO(&ai.fdread);
-    	FD_SET( ai.socket, &ai.fdread );
-		if(select(ai.socket+1, &ai.fdread, NULL, NULL, &tv) > 0)
-		{
-			int n = read_server(ai.socket, rxBuffer, 1024);
-			/* server down */
-			if(n == 0)
-			{
-				applog(LOG_ERR, "AI Server down");
-				// TODO better error management
-				opt_ai = false;
-				return NULL;
-			}
-			else // success Rx
-			{
-				// alloc message : 
-				message = allocAiMsg(rxBuffer, n);
-				queuePush(&ai.rxQueue, message);
-				message = NULL;
-			}
-		}
-
-		/* if we want to send something */
-		if(queueSize(&ai.txQueue) > 0)
-		{
-			message = (aiMessages_t*)queuePop(&ai.txQueue);
-			if(message == NULL || message->msg == NULL || message->msgLen == 0)
-			{
-				applog(LOG_ERR, "AI Tx message INVALID");
-				// TODO better error management
-			}
-			else
-			{
-				if(send(ai.socket, message->msg, message->msgLen, 0) < 0)
-				{
-					deleteAiMsg(&message);
-					applog(LOG_ERR, "AI Tx message FAILED");
-					// TODO better error management
-					opt_ai = false;
-					return NULL;
-				}
-				deleteAiMsg(&message);
-			}
-		}
-	}
-	applog(LOG_ERR, "QUIT AI THREAD!");
-    return NULL;
-}
-
-uint32_t aiTxSpace()
-{
-	return AI_QUEUE_LENGTH - queueSize(&ai.txQueue);
-}
-
-void airawTx(char* msg, int msgLen)
-{ 
-	aiMessages_t* message = allocAiMsg(msg, msgLen);
-	queuePush(&ai.txQueue, message);
-}
-
-bool aiRxPeek()
-{
-	return (queueSize(&ai.rxQueue) > 0);
-}
-
-void aiEmptyRxQueue()
-{
-	aiMessages_t* msg = NULL;
-	while(aiRxPeek())
-	{
-		msg = (aiMessages_t*)queuePop(&ai.rxQueue);
-		deleteAiMsg(&msg);
-	}
-}
-
-char* allocMesssage(const char* format, ...)
-{
-	/* initialize valist  */
-	va_list args, argsc;
-	va_start(args, format);
-	va_copy( argsc , args );
-	
-	/* calculate length */
-	int len = vsnprintf( NULL, 0, format, args );
-	len++; /* '\0' */
-
-	/* malloc */
-	char* buffer = cgcalloc(len, 1);
-	if( buffer == NULL )
-	{
-		va_end(args);
-		va_end(argsc);
-		return NULL;
-	}
-
-	/* real print */
-	vsnprintf( buffer, len, format, argsc );
-	buffer[len-1] = '\0';
-
-	/* clean memory reserved for valist */
-	va_end(args);
-	va_end(argsc);
-
-	return buffer;
-}
-
-
-void aiSendBlock(char* coinbase, char* merkle, char* header)
-{
-	char* message = allocMesssage( "{\"coinbase\":\"%s\",\"merkle\":\"%s\",\"header\":\"%s\"}", coinbase, merkle, header );
-	airawTx(message, strlen(message));
-	free(message);
-}
-
-void aiSendReward()
-{
-	char* hashstr = bin2hex(ai.savedHash,32); 
-	char* message = 
-	allocMesssage( 
-		"{\"hash\":\"%s\",\"end\":\"%s\"}", 
-		hashstr, 
-		ai.needToRefreshBlock ? "true" : "false"
-	);
-	airawTx(message, strlen(message));
-	free(hashstr);
-	free(message);
-}
-
-// don't forget to call aiRxPeek() first to avoid blocking
-bool aiReceiveNonce(uint32_t* aiNonce)
-{
-	if(aiNonce == NULL){ return false;}
-	char nonce2[9] = {0};
-	aiMessages_t* message = (aiMessages_t*)queuePop(&ai.rxQueue);
-
-	// decypher : FFFFFFFF
-	if(message->msgLen == 8)
-	{
-		char *ptr;
-		memcpy(nonce2, message->msg, 8);
-		nonce2[8] = '\0';
-		*aiNonce = strtoul( nonce2, &ptr, 16);
-		deleteAiMsg(&message);
-		return true;
-	}
-	else
-	{
-		applog(LOG_ERR, "AI Rx nonce2 BAD FORMAT");
-		deleteAiMsg(&message);
-		return false;
-	}
-}
-
-void aiCheckReward(struct work *work)
-{
-	//TODO AI reward : best difficulty obtained with the prevoious nonce2
-		if(ai.work != NULL && work->id == ai.work->id)
-		{
-			if(ai.lastBestZeroes > 0)
-			{
-				char* hashstr = bin2hex(ai.savedHash,32);
-				applog(LOG_NOTICE, "hash: %s", hashstr);
-				applog(LOG_NOTICE, "zeroes: %d", ai.lastBestZeroes);
-				free(hashstr);
-			}
-
-			////////////////////////////////////
-			// TODO next problem: make sure of the correspondance
-			// nonce2 -> resultHash
-			// at start we have many zeroes and NULL something is wrong
-			// The only place to find it may be inside the gecko-driver :/ 
-			////////////////////////////////////
-			ai.work = NULL;
-			aiSendReward();
-		}
-}
-
 static void gen_solo_work(struct pool *pool, struct work *work)
 {
-	char* merkle_str;
-	unsigned char merkle_root[32], merkle_root_nononce[32], merkle_sha[64], merkle_sha_nononce[64];
+	unsigned char merkle_root[32], merkle_sha[64];
 	uint32_t *data32, *swap32;
 	struct timeval now;
 	uint64_t nonce2le;
 	int i;
-	bool useAinonce = false;
-	uint32_t aiNonce = 0;
-
-	static uint32_t steps = 0;
-	//if(steps > 15){while(true);}
-	steps++;
 
 	cgtime(&now);
-	// mab776 timestamp update here! -> if AI need more time to process data
 	if (now.tv_sec - pool->tv_lastwork.tv_sec > 60)
-	{
 		update_gbt_solo(pool);
-	}
 
 	cg_wlock(&pool->gbt_lock);
 
-	// if AI nonce2 processing is enabled (javascript program must run too)
-	// mab776 NONCE2 STUFF HERE AI FUNCTIONS HERE
-	// the AI optimise 32bits of nonce2 for best number of zero according to variable non-modifiable input 
-	// details :
-	//  http://www.righto.com/2014/02/bitcoin-mining-hard-way-algorithms.html 
-	// search: "Creating a block for a pool"
-	if(opt_ai && ai.ready)
-	{
-		if(ai.needToRefreshBlock && (aiTxSpace() > 0))
-		{
-			ai.needToRefreshBlock = false;
-			applog(LOG_NOTICE, "AI Refreshing block");
-			if(opt_ai_single_merkle) // single merkle hash
-			{
-				// generate merkle hash without nonce2
-				gen_hash(pool->coinbase, merkle_root_nononce, pool->coinbase_len);
-				cg_memcpy(merkle_sha_nononce, merkle_root_nononce, 32);
-				for (i = 0; i < pool->merkles; i++) {
-					unsigned char *merkle_bin_nononce;
-					merkle_bin_nononce = pool->merklebin + (i * 32);
-					cg_memcpy(merkle_sha_nononce + 32, merkle_bin_nononce, 32);
-					gen_hash(merkle_sha_nononce, merkle_root_nononce, 64);
-					cg_memcpy(merkle_sha_nononce, merkle_root_nononce, 32);
-				}
-				uint32_t* data32_nononce = (uint32_t *)merkle_sha_nononce;
-				uint32_t* swap32_nononce = (uint32_t *)merkle_root_nononce;
-				flip32(swap32_nononce, data32_nononce);
-				char *merkle_hash_nononce;
-				merkle_hash_nononce = bin2hex((const unsigned char *)merkle_root_nononce, 32);
-				
-				// coinbase
-				char* coinbase = bin2hex(pool->coinbase, pool->coinbase_len);
-
-				// header
-				char* header = bin2hex((const unsigned char *) pool->header_bin, 112);
-				
-				aiSendBlock(coinbase, merkle_hash_nononce, header );
-				
-				free(coinbase);
-				free(header);
-				free(merkle_hash_nononce);
-			}
-			else // variable length whole merkleyTree
-			{
-				// coinbase
-				char* coinbase = bin2hex(pool->coinbase, pool->coinbase_len);
-
-				// merkle tree
-				char* merkleTree = bin2hex((const unsigned char *)pool->merklebin, pool->merkles * 32);
-
-				// header
-				char* header = bin2hex((const unsigned char *) pool->header_bin, 112);
-
-				// send data!
-				aiSendBlock(coinbase, merkleTree, header );
-
-				free(coinbase);
-				free(header);
-				free(merkleTree);
-			}
-			aiEmptyRxQueue();
-		}
-		else if(ai.work == NULL && aiRxPeek())
-		{
-			if(aiReceiveNonce(&aiNonce))
-			{
-				useAinonce = true;
-			}
-		}
-	}
-
 	/* Update coinbase. Always use an LE encoded nonce2 to fill in values
 	 * from left to right and prevent overflow errors with small n2sizes */
-	// copy actual nonce2
-
-
-	if(useAinonce)
-	{
-		pool->nonce2 = (uint64_t)aiNonce;
-		ai.work = work;
-		memset(ai.savedHash, 0, 32);
-		ai.lastBestZeroes = 0;
-		//applog(LOG_NOTICE, "AI NONCE2");
-		applog(LOG_NOTICE, "save work %d", work->id);
-	}
-	else
-	{
-		if(opt_nonce2_random)
-		{
-			pool->nonce2 = (uint64_t)(random() & 0xFFFFFFFF);
-		}
-		//applog(LOG_NOTICE, "NORMAL NONCE2");
-	}
-
 	nonce2le = htole64(pool->nonce2);
-	cg_memcpy(pool->coinbase + pool->nonce2_offset, &nonce2le, pool->n2size);	
-
-	if(!useAinonce && !opt_nonce2_random)
-	{
-		pool->nonce2++;
-	}
-	useAinonce = false;
-
-	work->nonce2 = pool->nonce2;
-
+	cg_memcpy(pool->coinbase + pool->nonce2_offset, &nonce2le, pool->n2size);
+	work->nonce2 = pool->nonce2++;
 	work->nonce2_len = pool->n2size;
 	work->gbt_txns = pool->transactions + 1;
-
 
 	/* Downgrade to a read lock to read off the pool variables */
 	cg_dwlock(&pool->gbt_lock);
 	work->coinbase = bin2hex(pool->coinbase, pool->coinbase_len);
-
 	/* Generate merkle root */
 	gen_hash(pool->coinbase, merkle_root, pool->coinbase_len);
 	cg_memcpy(merkle_sha, merkle_root, 32);
@@ -8342,6 +7874,7 @@ struct work *get_work(struct thr_info *thr, const int thr_id)
 }
 
 /* Submit a copy of the tested, statistic recorded work item asynchronously */
+// mab776 submit work (queue push to sthread)
 static void submit_work_async(struct work *work)
 {
 	struct pool *pool = work->pool;
@@ -8444,7 +7977,6 @@ bool test_nonce_diff(struct work *work, uint32_t nonce, double diff)
 	return (le64toh(*hash64) <= diff64);
 }
 
-// mab776 example of extraction work data
 static void update_work_stats(struct thr_info *thr, struct work *work)
 {
 	double test_diff = current_diff;
@@ -8469,7 +8001,6 @@ static void update_work_stats(struct thr_info *thr, struct work *work)
 
 /* To be used once the work has been tested to be meet diff1 and has had its
  * nonce adjusted. Returns true if the work target is met. */
-// mab776 submit block
 bool submit_tested_work(struct thr_info *thr, struct work *work)
 {
 	struct work *work_out;
@@ -8974,7 +8505,6 @@ void flush_queue(struct cgpu_info *cgpu)
  * perform a full nonce range and need a queue to maintain the device busy.
  * Work creation and destruction is not done from within this function
  * directly. */
-// mab776 where the work is hashed (all nonce1 tried)
 void hash_queued_work(struct thr_info *mythr)
 {
 	struct timeval tv_start = {0, 0}, tv_end;
@@ -9075,7 +8605,7 @@ void hash_driver_work(struct thr_info *mythr)
 	cgpu->deven = DEV_DISABLED;
 }
 
-// mab776 : miner_thread driver usave
+// mab776 : miner_thread
 void *miner_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
@@ -9519,8 +9049,8 @@ static void *watchpool_thread(void __maybe_unused *userdata)
 			cgtime(&rotate_tv);
 			switch_pools(NULL);
 		}
-		// mab776 delay 5sec for work reset HERE
-		cgsleep_ms_r(&cgt, 30000);
+
+		cgsleep_ms_r(&cgt, 5000);
 		cgtimer_time(&cgt);
 	}
 	return NULL;
@@ -10887,27 +10417,6 @@ begin_bench:
 #endif
 	}
 
-	// mab776 init AI comm & thread
-	if(opt_nonce2_random)
-	{
-		applog(LOG_NOTICE, "Using random nonce2");
-	}
-	if(opt_ai)
-	{
-		applog(LOG_NOTICE, "Creating AI socket");
-		if( createAiSocket("127.0.0.1", opt_ai_port > 0 ? opt_ai_port : 3776 ) == false )
-		{
-			applog(LOG_WARNING, "Please make sure the AI software is running first.");
-			applog(LOG_WARNING, "!Disabling AI forever!");
-			opt_ai = false;
-		}
-		else // success path
-		{
-			pthread_create(&ai.threadID, NULL, aiThread, NULL);
-			ai.ready = true;
-		}
-	}
-
 	// Start threads
 	k = 0;
 	for (i = 0; i < total_devices; ++i) {
@@ -11061,7 +10570,6 @@ begin_bench:
 
 #ifdef HAVE_LIBCURL
 		if (pool->gbt_solo) {
-			// mab776 main path
 			gen_solo_work(pool, work);
 			applog(LOG_DEBUG, "Generated GBT SOLO work");
 			stage_work(work);
